@@ -60,19 +60,17 @@ def extract_zip(zip_file_path, storage_dir):
 
 # Step 3: Read and convert text files to individual DataFrames
 @task(log_prints=True, name="Read and convert text files to individual DataFrames")
-def clean_data(data_frames):
-    def clean_df(df, name):
-        if name == "calendar.txt":
-            df['start_date'] = pd.to_datetime(df['start_date'], format='%Y%m%d')
-            df['end_date'] = pd.to_datetime(df['end_date'], format='%Y%m%d')
-            print(f"Cleaned data successfully for {name}")
-        if name == "stop_times.txt":
-            df = df[~df['trip_id'].str.contains('SBL')]
-            print(f"Filtered stop_times successfully, only including SBL trip_id's")
-        return df
-
-    cleaned_data_frames = [(name, clean_df(df, name)) for name, df in data_frames]
-    return cleaned_data_frames
+def read_text_files_to_df(directory):
+    excluded_files = {"feed_info.txt", "routes.txt", "shapes.txt", "agency.txt"}
+    data_frames = []
+    for file_name in os.listdir(directory):
+        if file_name.endswith(".txt") and file_name not in excluded_files:
+            file_path = os.path.join(directory, file_name)
+            print(f"converting {file_name} to dataframe")
+            df = pd.read_csv(file_path, delimiter=',')  # Adjust the delimiter as needed
+            data_frames.append((file_name, df))
+            print(f"added {file_name} successfully to data frame list")
+    return data_frames
 
 # Step 4: Clean the data
 @task(log_prints=True, name="Clean the data")
@@ -83,7 +81,8 @@ def clean_data(data_frames):
             df['end_date'] = pd.to_datetime(df['end_date'], format='%Y%m%d')
             print(f"Cleaned data successfully for {name}")
         if name == "stop_times.txt":
-            df = df[~df['trip_id'].str.contains('%SBL%')]
+            df = df[~df['trip_id'].str.contains('SBL')]
+            print(f"Filtered stop_times successfully for {name}, filtering for 'SBL' in trip_id")
         return df
 
     cleaned_data_frames = [(name, clean_df(df, name)) for name, df in data_frames]
