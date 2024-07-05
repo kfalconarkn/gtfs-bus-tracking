@@ -82,7 +82,7 @@ def clean_data(data_frames):
             df['end_date'] = pd.to_datetime(df['end_date'], format='%Y%m%d')
             print(f"Cleaned data successfully for {name}")
         if name == "stop_times.txt":
-            df = df[~df['trip_id'].str.contains('SBL')]
+            df = df[df['trip_id'].str.contains('SBL')]
             print(f"Filtered stop_times successfully for {name}")
         return df
 
@@ -110,6 +110,7 @@ def upload_to_db(cleaned_data_frames, db_name, db_user, db_password, db_host, db
         conn.commit()
 
         # Upload in chunks to avoid memory issues
+        print(f"Uploading new data chunks to {full_table_name}")
         df.to_sql(table_name, engine, schema=schema, if_exists='append', index=False, chunksize=10000)
         print(f"Uploaded new data to {full_table_name} successfully")
 
@@ -131,7 +132,6 @@ def gtfs_upload():
     text_data_frames = read_text_files_to_df(extract_dir)
     cleaned_data_frames = clean_data(text_data_frames)
     upload_to_db(cleaned_data_frames, DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, SCHEMA)
-    print("ETL Process completed successfully")
 
 # Execute the flow
 if __name__ == "__main__":
