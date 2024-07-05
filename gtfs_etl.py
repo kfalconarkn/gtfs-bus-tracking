@@ -7,6 +7,7 @@ import psycopg2
 from requests.adapters import HTTPAdapter
 from urllib3.exceptions import IncompleteRead
 from sqlalchemy import create_engine
+import gc
 
 # Define constants
 STORAGE_DIR = "gtfs_downloads"
@@ -34,7 +35,7 @@ class CustomHTTPAdapter(HTTPAdapter):
 
 # Step 1: Download the Zip File
 @task(log_prints=True, name="Download Zip file from open data portal", retries=5, retry_delay_seconds=30)
-def download_zip(url, storage_dir):    
+def download_zip(url, storage_dir):
     session = requests.Session()
     adapter = CustomHTTPAdapter()
     session.mount('http://', adapter)
@@ -82,7 +83,7 @@ def clean_data(data_frames):
             print(f"Cleaned data successfully for {name}")
         if name == "stop_times.txt":
             df = df[~df['trip_id'].str.contains('SBL')]
-            print(f"Filtered stop_times successfully for {name}, filtering for 'SBL' in trip_id")
+            print(f"Filtered stop_times successfully for {name}")
         return df
 
     cleaned_data_frames = [(name, clean_df(df, name)) for name, df in data_frames]
@@ -107,12 +108,17 @@ def upload_to_db(cleaned_data_frames, db_name, db_user, db_password, db_host, db
         cursor.execute(f"DELETE FROM {full_table_name}")
         print(f"cleared {full_table_name} successfully")
         conn.commit()
-        df.to_sql(table_name, engine, schema=schema, if_exists='append', index=False)
+
+        # Upload in chunks to avoid memory issues
+        df.to_sql(table_name, engine, schema=schema, if_exists='append', index=False, chunksize=10000)
         print(f"Uploaded new data to {full_table_name} successfully")
 
     for name, df in cleaned_data_frames:
         table_name = os.path.splitext(name)[0]  # Use the file name without extension as the table name
         upload(df, table_name)
+        # Clear memory
+        del df
+        gc.collect()
     
     conn.close()
 
