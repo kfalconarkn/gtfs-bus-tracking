@@ -123,6 +123,74 @@ def upload_to_db(cleaned_data_frames, db_name, db_user, db_password, db_host, db
     
     conn.close()
 
+
+@task(log_prints=True, name="Creating Duty Time Table from GTFS Data")
+def create_duty_time_table(db_name, db_user, db_password, db_host, db_port, schema):
+    conn = psycopg2.connect(
+        dbname=db_name,
+        user=db_user,
+        password=db_password,
+        host=db_host,
+        port=db_port
+    )
+    cursor = conn.cursor()
+    print("Connected to PostgreSQL database successfully")
+    engine = create_engine(f'postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}')
+
+    ##Query to upload resulting query data to table gtfs.shift_combined
+
+    query = """
+                SELECT 
+            s.trip_id,
+            s.dty_number,
+            t.route_id,
+            t.trip_headsign AS headsign,
+            st.stop_name,
+            stt.departure_time,
+            stt.stop_sequence,
+            stt.timepoint
+        FROM 
+            gtfs.shifts s
+        JOIN 
+            gtfs.trips t ON s.trip_id = t.trip_id
+        JOIN 
+            gtfs.stop_times stt ON s.trip_id = stt.trip_id
+        JOIN 
+            gtfs.stops st ON stt.stop_id::text = st.stop_id
+        ORDER BY
+            s.trip_id,
+            stt.stop_sequence;
+                """
+    
+     # Initialize the first chunk to the database
+    first_chunk = True
+
+    # Create a cursor for reading data in batches
+    cursor.execute(query)
+
+    while True:
+        batch_size = 10000
+        rows = cursor.fetchmany(batch_size)
+        if not rows:
+            break
+
+        # Convert to DataFrame
+        df = pd.DataFrame(rows, columns=[desc[0] for desc in cursor.description])
+
+        # Upload the batch to the database
+        if first_chunk:
+            df.to_sql('shift_combined', engine, schema=schema, if_exists='replace', index=False)
+            first_chunk = False
+        else:
+            df.to_sql('shift_combined', engine, schema=schema, if_exists='append', index=False)
+        
+
+    print("Data uploaded to gtfs.shift_combined successfully")
+
+    # Close the connection
+    cursor.close()
+    conn.close()
+
 # Define the flow
 @flow(name="Translink GTFS schedule data download flow")
 def gtfs_upload():
@@ -132,6 +200,7 @@ def gtfs_upload():
     text_data_frames = read_text_files_to_df(extract_dir)
     cleaned_data_frames = clean_data(text_data_frames)
     upload_to_db(cleaned_data_frames, DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, SCHEMA)
+    create_duty_time_table(DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, SCHEMA)
 
 # Execute the flow
 if __name__ == "__main__":
