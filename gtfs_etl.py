@@ -137,6 +137,10 @@ def create_duty_time_table(db_name, db_user, db_password, db_host, db_port, sche
     print("Connected to PostgreSQL database successfully")
     engine = create_engine(f'postgresql+psycopg2://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}')
 
+    ## clear table gtfs.shift_combined
+    cursor.execute("DELETE FROM gtfs.shift_combined")
+    conn.commit()
+
     ##Query to upload resulting query data to table gtfs.shift_combined
 
     query = """
