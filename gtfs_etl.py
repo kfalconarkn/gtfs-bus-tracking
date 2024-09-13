@@ -148,6 +148,7 @@ def create_duty_time_table(db_name, db_user, db_password, db_host, db_port, sche
             s.trip_id,
             s.dty_number,
             t.route_id,
+            t.service_id,
             t.trip_headsign AS headsign,
             st.stop_name,
             stt.departure_time,
@@ -162,7 +163,8 @@ def create_duty_time_table(db_name, db_user, db_password, db_host, db_port, sche
         JOIN 
             gtfs.stops st ON stt.stop_id::text = st.stop_id
         ORDER BY
-            s.trip_id,
+            s.dty_number,
+            stt.departure_time,
             stt.stop_sequence;
                 """
     
