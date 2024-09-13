@@ -142,6 +142,7 @@ def create_duty_time_table(db_name, db_user, db_password, db_host, db_port, sche
     conn.commit()
 
     ##Query to upload resulting query data to table gtfs.shift_combined
+    ## use service id to filter 
 
     query = """
                 SELECT 
