@@ -8,9 +8,8 @@ import supabase
 import pandas as pd
 from prefect import flow, task
 from pydantic import BaseModel, ValidationError
-from typing import List
 import postgrest
-from itertools import islice
+
 
 
 #### --------------------------------------------------------------------------------------------- ####
