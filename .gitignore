@@ -1,3 +1,4 @@
 env/
 mydatabase.db
 bearings_test.csv
+__pycache__
