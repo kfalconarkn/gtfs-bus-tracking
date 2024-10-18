@@ -29,7 +29,7 @@ supabase: Client = create_client(supabase_url, supabase_key)
 DB_NAME = "maindb"
 DB_USER = "kfalconar"
 DB_PASSWORD = "Teckdeck"
-DB_HOST = "172.16.2.92"
+DB_HOST = "localhost"
 DB_PORT = "5432"
 SCHEMA = "gtfs"
 
