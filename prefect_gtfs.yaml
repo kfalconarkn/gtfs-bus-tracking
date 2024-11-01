@@ -17,12 +17,11 @@ pull:
 - prefect.deployments.steps.git_clone:
     repository: https://github.com/kfalconarkn/gtfs-bus-tracking.git
     branch: main
+    id: clone-step
     access_token:
+- prefect.deployments.steps.pip_install_requirements:
+    directory: "{{ clone-step.directory }}"
     requirements_file: requirements.txt
-- prefect.deployments.steps.set_working_directory:
-    directory: .
-- prefect.deployments.steps.run_shell_script:
-    script: pip install -r requirements.txt
 
 # the deployments section allows you to provide configuration for deploying flows
 deployments:
