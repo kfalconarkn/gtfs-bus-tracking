@@ -1,39 +1,56 @@
-# Welcome to your prefect.yaml file! You can use this file for storing and managing
-# configuration for deploying your flows. We recommend committing this file to source
-# control along with your flow code.
-
-# Generic metadata about this project
+# prefect.yaml
 name: Trip stop tracking flow
 prefect-version: 3.0.7
 
-# build section allows you to manage and build docker images
-build: null
+# Build section for Docker if needed
+build: {}
 
-# push section allows you to manage if and how this project is uploaded to remote locations
-push: null
+# Push section for remote storage if needed
+push: {}
 
-# pull section allows you to provide instructions for cloning this project in remote locations
+# Pull section for deployment setup
 pull:
-- prefect.deployments.steps.git_clone:
-    repository: https://github.com/kfalconarkn/gtfs-bus-tracking.git
-    branch: main
-    id: clone-step
-    access_token:
-- prefect.deployments.steps.pip_install_requirements:
-    directory: "{{ clone-step.directory }}"
-    requirements_file: requirements.txt
+  - prefect.deployments.steps.git_clone:
+      repository: https://github.com/kfalconarkn/gtfs-bus-tracking.git
+      branch: main
+      id: clone-step
+      access_token: "{{ $GITHUB_ACCESS_TOKEN }}"  # Reference to secret
 
-# the deployments section allows you to provide configuration for deploying flows
+  - prefect.deployments.steps.pip_install_requirements:
+      directory: "{{ clone-step.directory }}"
+      requirements_file: requirements.txt
+      # Optional: you can specify extra packages here
+      extra_pip_args: ["--no-cache-dir"]
+
+# Deployments configuration
 deployments:
-- name: trip stop tracking floww
-  version: 0.0.1
-  tags: []
-  description: null
-  schedule: {}
-  flow_name: main_flow
-  entrypoint: null
-  parameters: {}
-  work_pool:
-    name: Main
-    work_queue_name: {}
-    job_variables: {}
+  - name: "trip stop tracking floww"
+    version: "0.0.1"
+    tags: []
+    description: "Trip stop tracking main flow"
+    entrypoint: "gtfs_trip_etl.py:main_flow"  # Make sure this points to your flow
+    work_pool:
+      name: "Main"
+      work_queue_name: "default"  # Specify a default queue
+      job_variables:
+        # Specify any environment variables or job-specific configs
+        pip_extra_index_url: "https://pypi.org/simple"
+        working_dir: "{{ clone-step.directory }}"
+
+  - name: "trip stop data monitoring deployment"
+    version: "1.0.0"
+    description: "Monitoring deployment with schedule"
+    entrypoint: "gtfs_trip_etl.py:main_flow"
+    work_pool:
+      name: "Main"
+      work_queue_name: "default"
+    schedules:
+      - interval: 15
+        anchor_date: "2024-11-01T05:22:35.191458+00:00"
+        timezone: "UTC"
+        active: true
+    job_variables:
+      # You can specify deployment-specific variables
+      memory_limit: "2GB"
+      pip_extra_index_url: "https://pypi.org/simple"
+      working_dir: "{{ clone-step.directory }}"
