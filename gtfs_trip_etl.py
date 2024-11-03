@@ -4,30 +4,55 @@ from google.transit import gtfs_realtime_pb2
 from datetime import datetime
 import pytz
 from supabase import create_client, Client
-from prefect import flow, task
 from pydantic import BaseModel, ValidationError
-from prefect.logging import get_run_logger
-from prefect.blocks.system import Secret
-import json
+import logging
+import os
+import sentry_sdk
+from sentry_sdk.integrations.asyncio import AsyncioIntegration
+from sentry_sdk.integrations.logging import LoggingIntegration
+import time
 
-### To-do
-# - convert secrets to prefect secret blocks
-# - change postgres db creds to supabase creds and extract trip shift data from there
+
 
 #### --------------------------------------------------------------------------------------------- ####
-####    This Prefect flow downloads GTFS data and process the trip, stop and bus locations.
+####    This script downloads GTFS data and stores the tables into a supabase database,
+####    it also creates the duty sheets for both Surfside and Sunbus SunshineCoast
 #### --------------------------------------------------------------------------------------------- ####
 
 ## define timezone
 brisbane_tz = pytz.timezone('Australia/Brisbane')
 
+## set up logging
+class ColoredNumbersFormatter(logging.Formatter):
+    def format(self, record):
+        message = super().format(record)
+        # Color numbers in purple and bold using ANSI escape codes
+        import re
+        return re.sub(r'(\d+)', '\033[35;1m\\1\033[0m', message)
 
+# Configure root logger
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Create and configure custom logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = ColoredNumbersFormatter('%(asctime)s - %(levelname)s  - %(message)s')
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger.handlers = [handler]
+
+# Suppress unwanted logs
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.client').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+# Prevent log propagation to root logger to avoid duplicate messages
+logger.propagate = False
 
 ## Define supabase keys, url and client
-secret_block_url = Secret.load("supabase-url")
-supabase_url = secret_block_url.get()
-secret_block_key = Secret.load("supabase-key")
-supabase_key = secret_block_key.get()
+supabase_url = os.getenv("SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(supabase_url, supabase_key)
 
 
@@ -55,6 +80,7 @@ class TripOTR(BaseModel):
     otr: float | None
     
 
+@sentry_sdk.trace
 async def fetch_trip_updates():
     """
     Asynchronously fetches GTFS real-time trip updates from the Translink API.
@@ -73,6 +99,7 @@ async def fetch_trip_updates():
         async with session.get(url) as response:
             return await response.read()
 
+@sentry_sdk.trace
 async def process_entity_trip_updates(entity):
     """
     Process GTFS real-time trip updates for a single entity.
@@ -113,6 +140,7 @@ async def process_entity_trip_updates(entity):
 
 
 
+@sentry_sdk.trace
 async def fetch_and_process_trip_updates():
     """
     Fetches and processes GTFS real-time trip updates.
@@ -147,9 +175,9 @@ async def fetch_and_process_trip_updates():
 
 
 ## get timining point data and shift data from localhost postgres db
+@sentry_sdk.trace
 async def get_timepoint_shift(stop_ids, trip_ids):
     """Function returns timepoint and shift data for given stop_ids and trip_ids"""
-    logger = get_run_logger()
     
     # Convert stop_ids to integers and deduplicate
     try:
@@ -195,10 +223,8 @@ async def get_timepoint_shift(stop_ids, trip_ids):
     return timingpoint_data, shift_data
 
 
-
-@task(name="Process Trip Updates", log_prints=True)
+@sentry_sdk.trace
 async def process_trip_updates():
-    logger = get_run_logger()
     logger.info("Starting to process trip updates...")
     stop_updates = await fetch_and_process_trip_updates()
     logger.info(f"Fetched {len(stop_updates)} stop updates")
@@ -240,10 +266,8 @@ async def process_trip_updates():
     return enriched_updates
 
 
-
-@task(name="Upload Trip Updates to Supabase", log_prints=True)
+@sentry_sdk.trace
 async def upload_trip_updates_to_supabase(stop_updates):
-    logger = get_run_logger()
     
     valid_updates = []
     invalid_updates = 0
@@ -265,7 +289,7 @@ async def upload_trip_updates_to_supabase(stop_updates):
     try:
         response = supabase.table('stops_update').upsert(
             valid_updates,
-            on_conflict='trip_id,stop_sequence,departure_time'
+            on_conflict='trip_id,stop_sequence,stop_id,date'
         ).execute()
         logger.info(f"Bulk updated: {len(response.data)} stops data")
     except Exception as e:
@@ -273,12 +297,76 @@ async def upload_trip_updates_to_supabase(stop_updates):
     
 
 
-@flow(name="GTFS Trip update process", log_prints=True)
+@sentry_sdk.trace
 async def main_flow():
-    stop_updates = await process_trip_updates()
+    with sentry_sdk.start_span(op="process_updates") as span:
+        stop_updates = await process_trip_updates()
+        span.set_data("update_count", len(stop_updates))
     
-    await upload_trip_updates_to_supabase(stop_updates)
+    with sentry_sdk.start_span(op="upload_updates"):
+        await upload_trip_updates_to_supabase(stop_updates)
 
 
 if __name__ == "__main__":
-    asyncio.run(main_flow())
+    # Initialize Sentry with additional configuration
+    sentry_sdk.init(
+        dsn="https://c0bcb112b40673561cb681dc57be4a58@o4508230906347520.ingest.us.sentry.io/4508230913818624",
+        
+        # Set traces_sample_rate to 1.0 to capture 100% of transactions for performance monitoring.
+        # We recommend adjusting this value in production.
+        traces_sample_rate=1.0,
+        
+        # Enable performance monitoring
+        enable_tracing=True,
+        
+        # Integrate with asyncio
+        integrations=[
+            AsyncioIntegration(),
+            # Capture all logging messages as breadcrumbs
+            LoggingIntegration(
+                level=logging.INFO,        # Capture info and above as breadcrumbs
+                event_level=logging.ERROR  # Send errors as events
+            ),
+        ],
+        
+        # Set environment
+        environment="development",  # Change to "production" in prod
+        
+        # Enable performance monitoring of specific functions
+        functions_to_trace=[
+            {'qualified_name': 'gtfs_trip_etl.fetch_and_process_trip_updates'},
+            {'qualified_name': 'gtfs_trip_etl.process_entity_trip_updates'},
+            {'qualified_name': 'gtfs_trip_etl.get_timepoint_shift'},
+            {'qualified_name': 'gtfs_trip_etl.process_trip_updates'},
+            {'qualified_name': 'gtfs_trip_etl.upload_trip_updates_to_supabase'}
+        ],
+        
+        # Configure sample rate for errors
+        sample_rate=1.0,
+        
+        # Add release information (optional)
+        release="1.0.0"  # You can use git commit hash or version number
+    )
+
+    # Wrap the main loop in a try-except with explicit Sentry error capture
+    while True:
+        try:
+            start_time = time.time()
+            logger.info("initializing GTFS trip stop updates...")
+            
+            # Create a transaction for the main flow
+            with sentry_sdk.start_transaction(op="task", name="main_flow"):
+                asyncio.run(main_flow())
+            
+            end_time = time.time()
+            execution_time = end_time - start_time
+            logger.info(f"cycle execution time: {execution_time:.2f} seconds")
+            logger.info("Waiting 15 seconds before running next ETL flow")
+            asyncio.run(asyncio.sleep(15))
+            
+        except Exception as e:
+            with sentry_sdk.push_scope() as scope:
+                scope.set_extra("execution_time", time.time() - start_time)
+                scope.set_tag("process", "gtfs_etl")
+                sentry_sdk.capture_exception(e)
+            asyncio.run(asyncio.sleep(15))

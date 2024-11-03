@@ -4,3 +4,4 @@ bearings_test.csv
 __pycache__
 gtfs_downloads/
 .prefectignore
+.env
