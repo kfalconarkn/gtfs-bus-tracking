@@ -1,4 +1,3 @@
-from prefect import flow, task
 import requests
 import zipfile
 import pandas as pd
@@ -7,18 +6,49 @@ from supabase import create_client, Client
 from requests.adapters import HTTPAdapter
 from urllib3.exceptions import IncompleteRead
 import gc
-from prefect.blocks.system import Secret
-from prefect import get_run_logger
+import logging
+import sentry_sdk
+from sentry_sdk.integrations.logging import LoggingIntegration
+import schedule
+import time
+from datetime import datetime
+
 # Define constants
 STORAGE_DIR = "gtfs_downloads"
 ZIP_FILE_URL = "https://gtfsrt.api.translink.com.au/gtfs/SEQ_SCH_GTFS.zip"
 
 ## Define supabase keys, url and client
-secret_block_url = Secret.load("supabase-url")
-supabase_url = secret_block_url.get()
-secret_block_key = Secret.load("supabase-key")
-supabase_key = secret_block_key.get()
+supabase_url = os.environ["SUPABASE_URL"]
+supabase_key = os.environ["SUPABASE_KEY"]
 supabase: Client = create_client(supabase_url, supabase_key)
+
+## set up logging
+class ColoredNumbersFormatter(logging.Formatter):
+    def format(self, record):
+        message = super().format(record)
+        # Color numbers in purple and bold using ANSI escape codes
+        import re
+        return re.sub(r'(\d+)', '\033[35;1m\\1\033[0m', message)
+
+# Configure root logger
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Create and configure custom logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = ColoredNumbersFormatter('%(asctime)s - %(levelname)s  - %(message)s')
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger.handlers = [handler]
+
+# Suppress unwanted logs
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
+logging.getLogger('aiohttp.client').setLevel(logging.WARNING)
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+
+# Prevent log propagation to root logger to avoid duplicate messages
+logger.propagate = False
 
 
 class CustomHTTPAdapter(HTTPAdapter):
@@ -36,7 +66,6 @@ class CustomHTTPAdapter(HTTPAdapter):
         return response
 
 # Step 1: Download the Zip File
-@task(log_prints=True, name="Download Zip file from open data portal", retries=5, retry_delay_seconds=30)
 def download_zip(url, storage_dir):
     session = requests.Session()
     adapter = CustomHTTPAdapter()
@@ -54,7 +83,6 @@ def download_zip(url, storage_dir):
     return zip_file_path
 
 # Step 2: Extract the Zip File
-@task(log_prints=True, name="Extract text files from zip file")
 def extract_zip(zip_file_path, storage_dir):
     with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
         zip_ref.extractall(storage_dir)
@@ -62,7 +90,6 @@ def extract_zip(zip_file_path, storage_dir):
     return storage_dir
 
 # Step 3: Read and convert text files to individual DataFrames
-@task(log_prints=True, name="Read and convert text files to individual DataFrames")
 def read_text_files_to_df(directory):
     excluded_files = {"feed_info.txt", "routes.txt", "shapes.txt", "agency.txt"}
     data_frames = []
@@ -76,7 +103,6 @@ def read_text_files_to_df(directory):
     return data_frames
 
 # Step 4: Clean the data
-@task(log_prints=True, name="Clean the data")
 def clean_data(data_frames):
     def clean_df(df, name):
         # Replace NaN values with None/null
@@ -99,9 +125,7 @@ def clean_data(data_frames):
     return cleaned_data_frames
 
 # Step 5: Upload to a Supabase Database 
-@task(log_prints=True, name="Upload text files to Supabase Database")
 def upload_to_db(cleaned_data_frames):
-    logger = get_run_logger()
     def upload(df, table_name):
         try:
             # Call the truncate_table function to clear the table
@@ -136,9 +160,7 @@ def upload_to_db(cleaned_data_frames):
     
 
 
-@task(log_prints=True, name="Creating Duty Time Table from GTFS Data", retries=3, retry_delay_seconds=10)
 def create_duty_time_table():
-    logger = get_run_logger()
     try:
         # Clear the dty_sheet table first
         supabase.rpc('truncate_table', {'table_name_param': 'dty_sheet'}).execute()
@@ -171,8 +193,7 @@ def create_duty_time_table():
     logger.info("Data uploaded to dty_sheet successfully")
 
 
-# Define the flow
-@flow(name="Translink GTFS schedule data download flow")
+
 def gtfs_upload():
     os.makedirs(STORAGE_DIR, exist_ok=True)
     zip_file_path = download_zip(ZIP_FILE_URL, STORAGE_DIR)
@@ -184,4 +205,66 @@ def gtfs_upload():
 
 # Execute the flow
 if __name__ == "__main__":
-    gtfs_upload()
+    # Initialize Sentry with additional configuration
+    sentry_sdk.init(
+        dsn="https://c0bcb112b40673561cb681dc57be4a58@o4508230906347520.ingest.us.sentry.io/4508230913818624",
+        
+        # Set traces_sample_rate to 1.0 to capture 100% of transactions for performance monitoring.
+        # We recommend adjusting this value in production.
+        traces_sample_rate=1.0,
+        
+        # Enable performance monitoring
+        enable_tracing=True,
+        
+        # Set integrations
+        integrations=[
+            # Capture all logging messages as breadcrumbs
+            LoggingIntegration(
+                level=logging.INFO,
+                event_level=logging.ERROR
+            ),
+        ],
+        
+        # Set environment
+        environment="development",  # Change to "production" in prod
+        
+        # Enable performance monitoring of specific functions
+        functions_to_trace=[
+            {'qualified_name': 'gtfs_etl.download_zip'},
+            {'qualified_name': 'gtfs_etl.extract_zip'}, 
+            {'qualified_name': 'gtfs_etl.read_text_files_to_df'},
+            {'qualified_name': 'gtfs_etl.clean_data'},
+            {'qualified_name': 'gtfs_etl.upload_to_db'},
+            {'qualified_name': 'gtfs_etl.create_duty_time_table'}
+        ],
+        
+        # Configure sample rate for errors
+        sample_rate=1.0,
+        
+        # Add release information (optional)
+        release="1.0.0"  # You can use git commit hash or version number
+    )
+
+    logger.info("Starting GTFS ETL scheduler")
+    
+    def job():
+        logger.info(f"Running GTFS ETL job at {datetime.now()}")
+        with sentry_sdk.start_transaction(op="task", name="gtfs data upload"):
+            try:
+                gtfs_upload()
+                logger.info("GTFS ETL job completed successfully")
+            except Exception as e:
+                logger.error(f"GTFS ETL job failed: {e}")
+                sentry_sdk.capture_exception(e)
+
+    # Schedule the job to run at 2 AM on Tuesday, Thursday, and Saturday
+    schedule.every().tuesday.at("02:00").do(job)
+    schedule.every().thursday.at("02:00").do(job)
+    schedule.every().saturday.at("02:00").do(job)
+
+    logger.info("Scheduler initialized. Waiting for next run time...")
+
+    # Keep the script running
+    while True:
+        schedule.run_pending()
+        time.sleep(3600)  # Check every hour (3600 seconds) instead of every minute
