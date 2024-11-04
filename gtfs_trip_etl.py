@@ -305,7 +305,17 @@ async def main_flow():
     
     with sentry_sdk.start_span(op="upload_updates"):
         await upload_trip_updates_to_supabase(stop_updates)
-
+        
+    with sentry_sdk.start_span(op="aggregate & upsert trip & shift otr data"):
+        ##trigger supabase database function
+        try:
+            supabase.rpc('calculate_trip_otr').execute()
+            logger.info(f"trip otr data aggregated and upserted successfully")
+            time.sleep(3)
+            supabase.rpc('calculate_shift_otr').execute()
+            logger.info(f"shift otr data aggregated and upserted successfully")
+        except Exception as e:
+            logger.error(f"Error upserting trip otr data: {e}")
 
 if __name__ == "__main__":
     # Initialize Sentry with additional configuration
