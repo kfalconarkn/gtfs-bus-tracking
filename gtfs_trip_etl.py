@@ -51,8 +51,8 @@ logging.getLogger('urllib3').setLevel(logging.WARNING)
 logger.propagate = False
 
 ## Define supabase keys, url and client
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_KEY")
+supabase_url = os.environ["SUPABASE_URL"]
+supabase_key = os.environ["SUPABASE_KEY"]
 supabase: Client = create_client(supabase_url, supabase_key)
 
 
