@@ -222,6 +222,16 @@ async def get_timepoint_shift(stop_ids, trip_ids):
     
     return timingpoint_data, shift_data
 
+@sentry_sdk.trace
+async def get_trip_headsign(trip_ids):
+    """Function returns trip_headsign data for given trip_ids"""
+    try:
+        result = supabase.table('trips').select('trip_id, trip_headsign').in_('trip_id', list(trip_ids)).execute()
+        return {row['trip_id']: row['trip_headsign'] for row in result.data}
+    except Exception as e:
+        logger.error(f"Error fetching trip headsign data: {e}")
+        return {}
+
 
 @sentry_sdk.trace
 async def process_trip_updates():
@@ -238,7 +248,11 @@ async def process_trip_updates():
     timingpoint_data, shift_data = await get_timepoint_shift(list(stop_ids), list(trip_ids))
     logger.info(f"Fetched timing point data for {len(timingpoint_data)} stops and shift data for {len(shift_data)} trips")
     
-    # Joining timepoint and shift data to stop_updates
+    # Get trip headsign data
+    trip_headsign_data = await get_trip_headsign(list(trip_ids))
+    logger.info(f"Fetched trip headsign data for {len(trip_headsign_data)} trips")
+    
+    # Joining timepoint and shift data to stop_updates. also join trip_headsign data
     logger.info("Joining timepoint and shift data to stop_updates...")
     enriched_updates = []
     missing_timepoints = set()
@@ -258,6 +272,7 @@ async def process_trip_updates():
         
         enriched_update['timepoint'] = timepoint
         enriched_update['dty_number'] = dty_number
+        enriched_update['headsign'] = trip_headsign_data.get(trip_id)
         enriched_updates.append(enriched_update)
     
     logger.info(f"Processed and joined data. Missing timepoints: {len(missing_timepoints)}")
@@ -299,11 +314,11 @@ async def upload_trip_updates_to_supabase(stop_updates):
 
 @sentry_sdk.trace
 async def main_flow():
-    with sentry_sdk.start_span(op="process_updates") as span:
+    with sentry_sdk.start_span(op="process_trip_updates") as span:
         stop_updates = await process_trip_updates()
         span.set_data("update_count", len(stop_updates))
     
-    with sentry_sdk.start_span(op="upload_updates"):
+    with sentry_sdk.start_span(op="upload_trip_updates_to_supabase"):
         await upload_trip_updates_to_supabase(stop_updates)
         
     with sentry_sdk.start_span(op="aggregate & upsert trip & shift otr data"):
@@ -355,7 +370,7 @@ if __name__ == "__main__":
         sample_rate=1.0,
         
         # Add release information (optional)
-        release="1.0.0"  # You can use git commit hash or version number
+        release="1.0.1"  # You can use git commit hash or version number
     )
 
     # Wrap the main loop in a try-except with explicit Sentry error capture
@@ -371,8 +386,8 @@ if __name__ == "__main__":
             end_time = time.time()
             execution_time = end_time - start_time
             logger.info(f"cycle execution time: {execution_time:.2f} seconds")
-            logger.info("Waiting 15 seconds before running next ETL flow")
-            asyncio.run(asyncio.sleep(15))
+            logger.info("Waiting 60 seconds before running next ETL flow")
+            asyncio.run(asyncio.sleep(60))
             
         except Exception as e:
             with sentry_sdk.push_scope() as scope:

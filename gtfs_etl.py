@@ -12,6 +12,8 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 import schedule
 import time
 from datetime import datetime
+from tqdm import tqdm
+import asyncio
 
 # Define constants
 STORAGE_DIR = "gtfs_downloads"
@@ -20,7 +22,9 @@ ZIP_FILE_URL = "https://gtfsrt.api.translink.com.au/gtfs/SEQ_SCH_GTFS.zip"
 ## Define supabase keys, url and client
 supabase_url = os.environ["SUPABASE_URL"]
 supabase_key = os.environ["SUPABASE_KEY"]
-supabase: Client = create_client(supabase_url, supabase_key)
+supabase: Client = create_client(supabase_url, 
+                                 supabase_key
+                                 )
 
 ## set up logging
 class ColoredNumbersFormatter(logging.Formatter):
@@ -66,67 +70,95 @@ class CustomHTTPAdapter(HTTPAdapter):
         return response
 
 # Step 1: Download the Zip File
-def download_zip(url, storage_dir):
+async def download_zip(url, storage_dir):
     session = requests.Session()
     adapter = CustomHTTPAdapter()
     session.mount('http://', adapter)
     session.mount('https://', adapter)
 
-    response = session.get(url)
-    print("Downloaded GTFS file successfully")
-    
     zip_file_path = os.path.join(storage_dir, "downloaded_file.zip")
-    with open(zip_file_path, "wb") as file:
-        file.write(response.content)
-        print("Saved Zip file to storage directory")
     
+    response = session.get(url, stream=True)
+    total_length = int(response.headers.get('content-length', 0))
+    
+    with open(zip_file_path, "wb") as file:
+        with tqdm(
+            total=total_length,
+            unit='iB',
+            unit_scale=True,
+            unit_divisor=1024,
+            desc="Downloading GTFS file"
+        ) as pbar:
+            for chunk in response.iter_content(chunk_size=1024):
+                size = file.write(chunk)
+                pbar.update(size)
+
+    logger.info("Downloaded GTFS file successfully")
     return zip_file_path
 
 # Step 2: Extract the Zip File
-def extract_zip(zip_file_path, storage_dir):
+async def extract_zip(zip_file_path, storage_dir):
     with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
         zip_ref.extractall(storage_dir)
-        print("Extracted text files from zip file to storage directory")
+        logger.info("Extracted text files from zip file to storage directory")
     return storage_dir
 
 # Step 3: Read and convert text files to individual DataFrames
-def read_text_files_to_df(directory):
+async def read_text_files_to_df(directory):
     excluded_files = {"feed_info.txt", "routes.txt", "shapes.txt", "agency.txt"}
-    data_frames = []
+    tasks = []
+    
+    async def read_csv_file(file_name, file_path):
+        logger.info(f"converting {file_name} to dataframe")
+        df = pd.read_csv(file_path, delimiter=',')  # Adjust the delimiter as needed
+        logger.info(f"added {file_name} successfully to data frame list")
+        return file_name, df
+    
     for file_name in os.listdir(directory):
         if file_name.endswith(".txt") and file_name not in excluded_files:
             file_path = os.path.join(directory, file_name)
-            print(f"converting {file_name} to dataframe")
-            df = pd.read_csv(file_path, delimiter=',')  # Adjust the delimiter as needed
-            data_frames.append((file_name, df))
-            print(f"added {file_name} successfully to data frame list")
-    return data_frames
+            tasks.append(asyncio.create_task(read_csv_file(file_name, file_path)))
+    
+    data_frames = await asyncio.gather(*tasks)
+    return list(data_frames)
 
 # Step 4: Clean the data
-def clean_data(data_frames):
-    def clean_df(df, name):
-        # Replace NaN values with None/null
+async def clean_data(data_frames):
+    async def clean_df(df, name):
+        # Create a copy to avoid modifying original
+        df = df.copy()
+        
+        # Replace NaN values with None/null in one operation
         df = df.replace({pd.NA: None, pd.NaT: None, float('nan'): None})
         
         if name == "calendar.txt":
-            # Convert to string format that Supabase can handle
-            df['start_date'] = pd.to_datetime(df['start_date'], format='%Y%m%d').dt.strftime('%Y-%m-%d')
-            df['end_date'] = pd.to_datetime(df['end_date'], format='%Y%m%d').dt.strftime('%Y-%m-%d')
-            print(f"Cleaned data successfully for {name}")
-        if name == "stop_times.txt":
-            df = df[df['trip_id'].str.contains('SBL|SUN')]
-            print(f"Filtered stop_times successfully for {name}")
-        if name == "trips.txt":
-            df = df[df['trip_id'].str.contains('SBL|SUN')]
-            print(f"Filtered trips successfully for {name}")
+            # Batch process dates
+            df[['start_date', 'end_date']] = df[['start_date', 'end_date']].apply(
+                lambda x: pd.to_datetime(x, format='%Y%m%d').dt.strftime('%Y-%m-%d')
+            )
+            logger.info(f"Cleaned data successfully for {name}")
+            
+        elif name in ["stop_times.txt", "trips.txt"]:
+            # Use boolean indexing for filtering
+            mask = df['trip_id'].str.contains('SBL|SUN', na=False)
+            df = df[mask]
+            logger.info(f"Filtered {name} successfully")
+            
         return df
 
-    cleaned_data_frames = [(name, clean_df(df, name)) for name, df in data_frames]
-    return cleaned_data_frames
+    # Process dataframes concurrently
+    tasks = [
+        asyncio.create_task(clean_df(df, name)) 
+        for name, df in data_frames
+    ]
+    
+    # Gather results maintaining order
+    cleaned_dfs = await asyncio.gather(*tasks)
+    return list(zip([name for name, _ in data_frames], cleaned_dfs))
 
 # Step 5: Upload to a Supabase Database 
-def upload_to_db(cleaned_data_frames):
-    def upload(df, table_name):
+async def upload_to_db(cleaned_data_frames):
+    async def upload(df, table_name):
         try:
             # Call the truncate_table function to clear the table
             supabase.rpc('truncate_table', {'table_name_param': table_name}).execute()
@@ -139,7 +171,7 @@ def upload_to_db(cleaned_data_frames):
             df_dict = df.replace({pd.NA: None, pd.NaT: None}).to_dict(orient='records')
             
             # Insert data in smaller chunks 
-            chunk_size = 10000  
+            chunk_size = 25000  
             for i in range(0, len(df_dict), chunk_size):
                 chunk = df_dict[i:i + chunk_size]
                 supabase.table(table_name).insert(chunk).execute()
@@ -153,55 +185,22 @@ def upload_to_db(cleaned_data_frames):
 
     for name, df in cleaned_data_frames:
         table_name = os.path.splitext(name)[0]
-        upload(df, table_name)
+        await upload(df, table_name)
         # Clear memory
         del df
         gc.collect()
     
 
 
-def create_duty_time_table():
-    try:
-        # Clear the dty_sheet table first
-        supabase.rpc('truncate_table', {'table_name_param': 'dty_sheet'}).execute()
-        logger.info("Cleared dty_sheet table successfully")
-    except Exception as e:
-        logger.error(f"Error clearing dty_sheet table: {e}")
-        raise e
-
-    try:
-        # Call the select_trip_data function and get the results
-        response = supabase.rpc('select_trip_data').execute()
-        
-        if response.data:
-            # Insert the results into dty_sheet table
-            chunk_size = 10000
-            data = response.data
-            for i in range(0, len(data), chunk_size):
-                chunk = data[i:i + chunk_size]
-                supabase.table('dty_sheet').insert(chunk).execute()
-                logger.info(f"Uploaded chunk {i//chunk_size + 1} of {len(data)//chunk_size + 1} to dty_sheet")
-            
-            logger.info(f"Successfully processed {len(data)} records into dty_sheet table")
-        else:
-            logger.warning("No data returned from select_trip_data function")
-            
-    except Exception as e:
-        logger.error(f"Error creating dty_sheet table: {e}")
-        raise e
-
-    logger.info("Data uploaded to dty_sheet successfully")
 
 
-
-def gtfs_upload():
+async def gtfs_upload():
     os.makedirs(STORAGE_DIR, exist_ok=True)
-    zip_file_path = download_zip(ZIP_FILE_URL, STORAGE_DIR)
-    extract_dir = extract_zip(zip_file_path, STORAGE_DIR)
-    text_data_frames = read_text_files_to_df(extract_dir)
-    cleaned_data_frames = clean_data(text_data_frames)
-    upload_to_db(cleaned_data_frames)
-    create_duty_time_table()
+    zip_file_path = await download_zip(ZIP_FILE_URL, STORAGE_DIR)
+    extract_dir = await extract_zip(zip_file_path, STORAGE_DIR)
+    text_data_frames = await read_text_files_to_df(extract_dir)
+    cleaned_data_frames = await clean_data(text_data_frames)
+    await upload_to_db(cleaned_data_frames)
 
 # Execute the flow
 if __name__ == "__main__":
@@ -242,25 +241,29 @@ if __name__ == "__main__":
         sample_rate=1.0,
         
         # Add release information (optional)
-        release="1.0.0"  # You can use git commit hash or version number
+        release="1.0.1" 
     )
 
     logger.info("Starting GTFS ETL scheduler")
     
-    def job():
+    async def job():
         logger.info(f"Running GTFS ETL job at {datetime.now()}")
         with sentry_sdk.start_transaction(op="task", name="gtfs data upload"):
             try:
-                gtfs_upload()
+                await gtfs_upload()
                 logger.info("GTFS ETL job completed successfully")
             except Exception as e:
                 logger.error(f"GTFS ETL job failed: {e}")
                 sentry_sdk.capture_exception(e)
 
+    # Run job immediately on first execution
+    logger.info("Running initial GTFS upload...")
+    asyncio.run(job())
+
     # Schedule the job to run at 2 AM on Tuesday, Thursday, and Saturday
-    schedule.every().tuesday.at("02:00").do(job)
-    schedule.every().thursday.at("02:00").do(job)
-    schedule.every().saturday.at("02:00").do(job)
+    schedule.every().tuesday.at("02:00").do(asyncio.run(job()))
+    schedule.every().thursday.at("02:00").do(asyncio.run(job()))
+    schedule.every().saturday.at("02:00").do(asyncio.run(job()))
 
     logger.info("Scheduler initialized. Waiting for next run time...")
 
