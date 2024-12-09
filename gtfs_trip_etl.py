@@ -300,6 +300,10 @@ async def upload_trip_updates_to_supabase(stop_updates):
     if not valid_updates:
         logger.warning("No valid updates to upload")
         return
+    
+    ##data cleanup step before upsert
+    ## clean the route_id field to remove everything after the first 3 characters - optimized using list comprehension
+    valid_updates = [{**update, 'route_id': update['route_id'][:3]} for update in valid_updates]
 
     try:
         response = supabase.table('stops_update').upsert(
