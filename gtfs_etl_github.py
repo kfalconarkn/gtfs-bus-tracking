@@ -9,14 +9,12 @@ import gc
 import logging
 import sentry_sdk
 from sentry_sdk.integrations.logging import LoggingIntegration
-import schedule
-import time
 from datetime import datetime
 from tqdm import tqdm
 import asyncio
 
 # Define constants
-STORAGE_DIR = "gtfs_downloads"
+STORAGE_DIR = "/tmp/gtfs_downloads"
 ZIP_FILE_URL = "https://gtfsrt.api.translink.com.au/gtfs/SEQ_SCH_GTFS.zip"
 
 ## Define supabase keys, url and client
@@ -272,10 +270,6 @@ async def upload_to_db(cleaned_data_frames):
             logger.error(f"Error deleting old records from {table_name}: {e}")
     
     logger.info("Database update completed")
-    
-
-
-
 
 async def gtfs_upload():
     os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -308,53 +302,34 @@ if __name__ == "__main__":
         ],
         
         # Set environment
-        environment="development",  # Change to "production" in prod
+        environment="production",  # Changed to production for GitHub Actions
         
         # Enable performance monitoring of specific functions
         functions_to_trace=[
-            {'qualified_name': 'gtfs_etl.download_zip'},
-            {'qualified_name': 'gtfs_etl.extract_zip'}, 
-            {'qualified_name': 'gtfs_etl.read_text_files_to_df'},
-            {'qualified_name': 'gtfs_etl.clean_data'},
-            {'qualified_name': 'gtfs_etl.upload_to_db'},
-            {'qualified_name': 'gtfs_etl.create_duty_time_table'}
+            {'qualified_name': 'gtfs_etl_github.download_zip'},
+            {'qualified_name': 'gtfs_etl_github.extract_zip'}, 
+            {'qualified_name': 'gtfs_etl_github.read_text_files_to_df'},
+            {'qualified_name': 'gtfs_etl_github.clean_data'},
+            {'qualified_name': 'gtfs_etl_github.upload_to_db'}
         ],
         
         # Configure sample rate for errors
         sample_rate=1.0,
         
         # Add release information (optional)
-        release="1.0.2" 
+        release="1.0.3" 
     )
 
-    logger.info("Starting GTFS ETL scheduler")
+    logger.info("Starting GTFS ETL process")
     
-    async def job():
-        logger.info(f"Running GTFS ETL job at {datetime.now()}")
-        with sentry_sdk.start_transaction(op="task", name="gtfs data upload"):
-            try:
-                await gtfs_upload()
-                logger.info("GTFS ETL job completed successfully")
-            except Exception as e:
-                logger.error(f"GTFS ETL job failed: {e}")
-                sentry_sdk.capture_exception(e)
-
-    # Function to run the async job from the scheduler
-    def run_job():
-        asyncio.run(job())
-        
-    # Run job immediately on first execution
-    logger.info("Running initial GTFS upload...")
-    asyncio.run(job())
-
-    # Schedule the job to run at 2 AM on Tuesday, Thursday, and Saturday
-    schedule.every().tuesday.at("02:00").do(run_job)
-    schedule.every().thursday.at("02:00").do(run_job)
-    schedule.every().saturday.at("02:00").do(run_job)
-
-    logger.info("Scheduler initialized. Waiting for next run time...")
-
-    # Keep the script running
-    while True:
-        schedule.run_pending()
-        time.sleep(3600)  # Check every hour (3600 seconds) instead of every minute
+    # Run job immediately (no scheduling since GitHub Actions handles that)
+    logger.info(f"Running GTFS ETL job at {datetime.now()}")
+    with sentry_sdk.start_transaction(op="task", name="gtfs data upload"):
+        try:
+            asyncio.run(gtfs_upload())
+            logger.info("GTFS ETL job completed successfully")
+        except Exception as e:
+            logger.error(f"GTFS ETL job failed: {e}")
+            sentry_sdk.capture_exception(e)
+            # Exit with error code to indicate failure to GitHub Actions
+            exit(1) 

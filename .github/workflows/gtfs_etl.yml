@@ -1,0 +1,31 @@
+name: GTFS ETL Process
+
+on:
+  schedule:
+    # Run at 2 AM UTC on Tuesday, Thursday, and Saturday
+    - cron: '0 2 * * 2,4,6'
+  workflow_dispatch:  # Allow manual triggering
+
+jobs:
+  run-etl:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Run GTFS ETL script
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python gtfs_etl_github.py 
