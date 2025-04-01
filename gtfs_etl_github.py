@@ -7,8 +7,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.exceptions import IncompleteRead
 import gc
 import logging
-import sentry_sdk
-from sentry_sdk.integrations.logging import LoggingIntegration
 from datetime import datetime
 from tqdm import tqdm
 import asyncio
@@ -259,13 +257,43 @@ async def upload_to_db(cleaned_data_frames):
                 if 'df_dict' in locals() and len(df_dict) > 0:
                     logger.error(f"First row sample: {df_dict[0]}")
     
-    # Delete old records that weren't part of this update
-    # Skip stop_times since we're handling it differently
+    # Delete old records that weren't part of this update with improved batching for trips table
     for table_name in ['trips', 'stops', 'calendar', 'calendar_dates']:
         try:
-            # Delete records that don't have the current timestamp
-            supabase.from_(table_name).delete().neq('last_updated', current_update).execute()
-            logger.info(f"Deleted old records from {table_name}")
+            if table_name == 'trips':
+                # Handle the trips table in smaller batches to avoid timeout
+                # First, get the current trip_ids to keep
+                logger.info(f"Getting current trip_ids from {table_name} to handle deletion in batches")
+                current_trips_response = supabase.from_(table_name).select('trip_id').eq('last_updated', current_update).execute()
+                current_trip_ids = [item['trip_id'] for item in current_trips_response.data]
+                logger.info(f"Found {len(current_trip_ids)} current trips to keep")
+                
+                # Now get all trip_ids in the table
+                all_trips_response = supabase.from_(table_name).select('trip_id').execute()
+                all_trip_ids = [item['trip_id'] for item in all_trips_response.data]
+                logger.info(f"Found {len(all_trip_ids)} total trips in database")
+                
+                # Find trip_ids to delete (those not in current_trip_ids)
+                trips_to_delete = [trip_id for trip_id in all_trip_ids if trip_id not in set(current_trip_ids)]
+                logger.info(f"Identified {len(trips_to_delete)} trips to delete")
+                
+                # Delete in small batches with pauses to avoid timeout
+                batch_size = 50  # Smaller batch size to prevent timeouts
+                for i in range(0, len(trips_to_delete), batch_size):
+                    batch = trips_to_delete[i:i + batch_size]
+                    try:
+                        supabase.from_(table_name).delete().in_('trip_id', batch).execute()
+                        logger.info(f"Deleted batch {i//batch_size + 1} of {len(trips_to_delete)//batch_size + 1} from {table_name}")
+                        await asyncio.sleep(0.5)  # Pause between batches
+                    except Exception as e:
+                        logger.error(f"Error deleting batch {i//batch_size + 1} from {table_name}: {e}")
+                        # Continue with next batch instead of failing completely
+                        await asyncio.sleep(1.0)  # Longer pause after error
+                        continue
+            else:
+                # For other tables, use the original approach
+                supabase.from_(table_name).delete().neq('last_updated', current_update).execute()
+                logger.info(f"Deleted old records from {table_name}")
         except Exception as e:
             logger.error(f"Error deleting old records from {table_name}: {e}")
     
@@ -281,55 +309,14 @@ async def gtfs_upload():
 
 # Execute the flow
 if __name__ == "__main__":
-    # Initialize Sentry with additional configuration
-    sentry_sdk.init(
-        dsn="https://c0bcb112b40673561cb681dc57be4a58@o4508230906347520.ingest.us.sentry.io/4508230913818624",
-        
-        # Set traces_sample_rate to 1.0 to capture 100% of transactions for performance monitoring.
-        # We recommend adjusting this value in production.
-        traces_sample_rate=1.0,
-        
-        # Enable performance monitoring
-        enable_tracing=True,
-        
-        # Set integrations
-        integrations=[
-            # Capture all logging messages as breadcrumbs
-            LoggingIntegration(
-                level=logging.INFO,
-                event_level=logging.ERROR
-            ),
-        ],
-        
-        # Set environment
-        environment="production",  # Changed to production for GitHub Actions
-        
-        # Enable performance monitoring of specific functions
-        functions_to_trace=[
-            {'qualified_name': 'gtfs_etl_github.download_zip'},
-            {'qualified_name': 'gtfs_etl_github.extract_zip'}, 
-            {'qualified_name': 'gtfs_etl_github.read_text_files_to_df'},
-            {'qualified_name': 'gtfs_etl_github.clean_data'},
-            {'qualified_name': 'gtfs_etl_github.upload_to_db'}
-        ],
-        
-        # Configure sample rate for errors
-        sample_rate=1.0,
-        
-        # Add release information (optional)
-        release="1.0.3" 
-    )
-
     logger.info("Starting GTFS ETL process")
     
     # Run job immediately (no scheduling since GitHub Actions handles that)
     logger.info(f"Running GTFS ETL job at {datetime.now()}")
-    with sentry_sdk.start_transaction(op="task", name="gtfs data upload"):
-        try:
-            asyncio.run(gtfs_upload())
-            logger.info("GTFS ETL job completed successfully")
-        except Exception as e:
-            logger.error(f"GTFS ETL job failed: {e}")
-            sentry_sdk.capture_exception(e)
-            # Exit with error code to indicate failure to GitHub Actions
-            exit(1) 
+    try:
+        asyncio.run(gtfs_upload())
+        logger.info("GTFS ETL job completed successfully")
+    except Exception as e:
+        logger.error(f"GTFS ETL job failed: {e}")
+        # Exit with error code to indicate failure to GitHub Actions
+        exit(1) 
