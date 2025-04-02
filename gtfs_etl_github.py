@@ -268,13 +268,9 @@ async def upload_to_db(cleaned_data_frames):
                 current_trip_ids = [item['trip_id'] for item in current_trips_response.data]
                 logger.info(f"Found {len(current_trip_ids)} current trips to keep")
                 
-                # Now get all trip_ids in the table
-                all_trips_response = supabase.from_(table_name).select('trip_id').execute()
-                all_trip_ids = [item['trip_id'] for item in all_trips_response.data]
-                logger.info(f"Found {len(all_trip_ids)} total trips in database")
-                
-                # Find trip_ids to delete (those not in current_trip_ids)
-                trips_to_delete = [trip_id for trip_id in all_trip_ids if trip_id not in set(current_trip_ids)]
+                # Get outdated trip_ids directly using a query filtering by last_updated column
+                old_trips_response = supabase.from_(table_name).select('trip_id').neq('last_updated', current_update).execute()
+                trips_to_delete = [item['trip_id'] for item in old_trips_response.data]
                 logger.info(f"Identified {len(trips_to_delete)} trips to delete")
                 
                 # Delete in small batches with pauses to avoid timeout
