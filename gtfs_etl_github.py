@@ -274,7 +274,7 @@ async def upload_to_db(cleaned_data_frames):
                 logger.info(f"Identified {len(trips_to_delete)} trips to delete")
                 
                 # Delete in small batches with pauses to avoid timeout
-                batch_size = 50  # Smaller batch size to prevent timeouts
+                batch_size = 1000  # Smaller batch size to prevent timeouts
                 for i in range(0, len(trips_to_delete), batch_size):
                     batch = trips_to_delete[i:i + batch_size]
                     try:
