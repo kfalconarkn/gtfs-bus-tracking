@@ -223,7 +223,7 @@ async def upload_to_db(cleaned_data_frames):
                                     continue
                             
                             # Split the insert into even smaller chunks
-                            insert_chunk_size = 5000
+                            insert_chunk_size = 1000
                             for k in range(0, len(chunk), insert_chunk_size):
                                 insert_chunk = chunk[k:k + insert_chunk_size]
                                 try:
@@ -274,7 +274,7 @@ async def upload_to_db(cleaned_data_frames):
                 logger.info(f"Identified {len(trips_to_delete)} trips to delete")
                 
                 # Delete in small batches with pauses to avoid timeout
-                batch_size = 1000  # Smaller batch size to prevent timeouts
+                batch_size = 100
                 for i in range(0, len(trips_to_delete), batch_size):
                     batch = trips_to_delete[i:i + batch_size]
                     try:
