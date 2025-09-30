@@ -5,4 +5,5 @@ __pycache__
 gtfs_downloads/
 .prefectignore
 .env
-.cursor/
+.mcp.json
+/.claude
