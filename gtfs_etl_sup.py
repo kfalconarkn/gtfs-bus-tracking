@@ -201,13 +201,13 @@ async def upload_to_db(cleaned_data_frames):
                     
                     # Use upsert with "on_conflict" to update existing records
                     if table_name == 'trips':
-                        supabase.table(table_name).upsert(chunk, on_conflict='trip_id').execute()
+                        supabase.from_(table_name).upsert(chunk, on_conflict='trip_id').execute()
                     elif table_name == 'stops':
-                        supabase.table(table_name).upsert(chunk, on_conflict='stop_id').execute()
+                        supabase.from_(table_name).upsert(chunk, on_conflict='stop_id').execute()
                     elif table_name == 'calendar':
-                        supabase.table(table_name).upsert(chunk, on_conflict='service_id').execute()
+                        supabase.from_(table_name).upsert(chunk, on_conflict='service_id').execute()
                     elif table_name == 'calendar_dates':
-                        supabase.table(table_name).upsert(chunk, on_conflict='id',).execute()
+                        supabase.from_(table_name).upsert(chunk, on_conflict='id').execute()
                     elif table_name == 'stop_times':
                         try:
                             # For stop_times, get unique trip_ids in this chunk
@@ -231,7 +231,7 @@ async def upload_to_db(cleaned_data_frames):
                             for k in range(0, len(chunk), insert_chunk_size):
                                 insert_chunk = chunk[k:k + insert_chunk_size]
                                 try:
-                                    supabase.table(table_name).insert(insert_chunk).execute()
+                                    supabase.from_(table_name).insert(insert_chunk).execute()
                                     # Add a delay after each insert operation
                                     await asyncio.sleep(0.3)
                                     logger.info(f"Inserted sub-chunk {k//insert_chunk_size + 1} of {len(chunk)//insert_chunk_size + 1} for chunk {i//chunk_size + 1}")

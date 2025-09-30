@@ -189,7 +189,7 @@ async def get_timepoint_shift(stop_ids, trip_ids):
 
     try:
         # Query for unique stop_id and timepoint combinations
-        timing_point_result = supabase.table('stop_times')\
+        timing_point_result = supabase.from_('stop_times')\
             .select('stop_id, timepoint')\
             .in_('stop_id', int_stop_ids)\
             .execute()\
@@ -210,7 +210,7 @@ async def get_timepoint_shift(stop_ids, trip_ids):
 
     # Process shift data in a single query
     try:
-        shift_result = supabase.table('shifts')\
+        shift_result = supabase.from_('shifts')\
             .select('trip_id, dty_number')\
             .in_('trip_id', list(trip_ids))\
             .execute()
@@ -226,7 +226,7 @@ async def get_timepoint_shift(stop_ids, trip_ids):
 async def get_trip_headsign(trip_ids):
     """Function returns trip_headsign data for given trip_ids"""
     try:
-        result = supabase.table('trips').select('trip_id, trip_headsign').in_('trip_id', list(trip_ids)).execute()
+        result = supabase.from_('trips').select('trip_id, trip_headsign').in_('trip_id', list(trip_ids)).execute()
         return {row['trip_id']: row['trip_headsign'] for row in result.data}
     except Exception as e:
         logger.error(f"Error fetching trip headsign data: {e}")
@@ -306,7 +306,7 @@ async def upload_trip_updates_to_supabase(stop_updates):
     valid_updates = [{**update, 'route_id': update['route_id'][:3]} for update in valid_updates]
 
     try:
-        response = supabase.table('stops_update').upsert(
+        response = supabase.from_('stops_update').upsert(
             valid_updates,
             on_conflict='trip_id,stop_sequence,stop_id,date'
         ).execute()
